@@ -1,0 +1,11 @@
+Model Information:
+* title:	Free Abandoned Apartment
+* source:	https://sketchfab.com/3d-models/free-abandoned-apartment-bf0509f58e46411daf7da5d6a9ea8a48
+* author:	ahz_khn_05 (https://sketchfab.com/ahz_khn_05)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Free Abandoned Apartment" (https://sketchfab.com/3d-models/free-abandoned-apartment-bf0509f58e46411daf7da5d6a9ea8a48) by ahz_khn_05 (https://sketchfab.com/ahz_khn_05) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
