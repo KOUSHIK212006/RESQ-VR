@@ -161,102 +161,141 @@ namespace RESQ.EditorTools
                 return;
             }
 
-            GameObject phase6Root = FindInRoots(scene.GetRootGameObjects(), Phase6RootName);
-            if (phase6Root != null &&
-                (FindInHierarchy(phase6Root.transform, "Emergency Door") != null ||
-                 FindInHierarchy(phase6Root.transform, "Evacuation Manager") != null ||
-                 FindInHierarchy(phase6Root.transform, "Passage") != null ||
-                 FindInHierarchy(phase6Root.transform, "Stairs") != null ||
-                 FindInHierarchy(phase6Root.transform, "Basement Assembly Area Marker") != null))
-            {
-                Debug.LogError("Phase 6 route setup stopped because a door or evacuation manager already exists.");
-                return;
-            }
-
-            XRInteractionManager interactionManager = FindInSceneComponent<XRInteractionManager>(scene);
-            if (interactionManager == null)
-            {
-                Debug.LogError(
-                    "Create the Phase 6 extinguisher first. Its setup creates or locates the shared XRInteractionManager.");
-                return;
-            }
-
             try
             {
-                EnsureFolder(PrefabFolder);
-                EnsureFolder(MaterialFolder);
-                Material doorMaterial = GetOrCreateMaterial(
-                    DoorMaterialPath,
-                    new Color(0.12f, 0.19f, 0.27f, 1f));
-                Material frameMaterial = GetOrCreateMaterial(
-                    DoorFrameMaterialPath,
-                    new Color(0.55f, 0.59f, 0.64f, 1f));
-                Material indicatorMaterial = GetOrCreateMaterial(
-                    DoorIndicatorMaterialPath,
-                    new Color(1f, 0.45f, 0.05f, 1f));
+                GameObject phase6Root = FindInRoots(scene.GetRootGameObjects(), Phase6RootName);
+                phase6Root = phase6Root != null ? phase6Root : CreateSceneRoot(scene, Phase6RootName);
 
-                GameObject doorPrefab = CreateDoorPrefab(
-                    doorMaterial,
-                    frameMaterial,
-                    indicatorMaterial);
-                if (doorPrefab == null)
+                XRInteractionManager interactionManager = FindInSceneComponent<XRInteractionManager>(scene);
+                if (interactionManager == null)
                 {
-                    return;
+                    interactionManager = Undo.AddComponent<XRInteractionManager>(phase6Root);
                 }
 
-                phase6Root = phase6Root != null ? phase6Root : CreateSceneRoot(scene, Phase6RootName);
-                GameObject door = PrefabUtility.InstantiatePrefab(doorPrefab, scene) as GameObject;
+                GameObject door = FindInHierarchy(phase6Root.transform, "Emergency Door");
                 if (door == null)
                 {
-                    throw new InvalidOperationException("Could not instantiate the temporary emergency door prefab.");
+                    EnsureFolder(PrefabFolder);
+                    EnsureFolder(MaterialFolder);
+                    Material doorMaterial = GetOrCreateMaterial(
+                        DoorMaterialPath,
+                        new Color(0.12f, 0.19f, 0.27f, 1f));
+                    Material frameMaterial = GetOrCreateMaterial(
+                        DoorFrameMaterialPath,
+                        new Color(0.55f, 0.59f, 0.64f, 1f));
+                    Material indicatorMaterial = GetOrCreateMaterial(
+                        DoorIndicatorMaterialPath,
+                        new Color(1f, 0.45f, 0.05f, 1f));
+
+                    GameObject doorPrefab = CreateDoorPrefab(
+                        doorMaterial,
+                        frameMaterial,
+                        indicatorMaterial);
+                    if (doorPrefab == null)
+                    {
+                        return;
+                    }
+
+                    door = PrefabUtility.InstantiatePrefab(doorPrefab, scene) as GameObject;
+                    if (door == null)
+                    {
+                        throw new InvalidOperationException("Could not instantiate the temporary emergency door prefab.");
+                    }
+
+                    Undo.RegisterCreatedObjectUndo(door, "Create temporary emergency door");
+                    Undo.SetTransformParent(door.transform, phase6Root.transform, "Parent emergency door");
+                    Undo.RecordObject(door.transform, "Place emergency door");
+                    door.name = "Emergency Door";
+                    door.transform.position = playerEnvironment.RoutePoint(0.23f);
+                    door.transform.rotation = Quaternion.LookRotation(playerEnvironment.routeDirection, Vector3.up);
                 }
 
-                Undo.RegisterCreatedObjectUndo(door, "Create temporary emergency door");
-                Undo.SetTransformParent(door.transform, phase6Root.transform, "Parent emergency door");
-                Undo.RecordObject(door.transform, "Place emergency door");
-                door.name = "Emergency Door";
-                door.transform.position = playerEnvironment.RoutePoint(0.23f);
-                door.transform.rotation = Quaternion.LookRotation(playerEnvironment.routeDirection, Vector3.up);
-
-                EmergencyDoorController doorController = door.GetComponent<EmergencyDoorController>();
-                XRBaseInteractable doorInteractable =
+                GameObject handle = FindInHierarchy(door.transform, "Interactable Handle");
+                XRSimpleInteractable simpleInteractable =
                     door.GetComponentInChildren<XRSimpleInteractable>(true);
+                if (simpleInteractable == null && handle != null)
+                {
+                    simpleInteractable = EnsureComponent<XRSimpleInteractable>(handle);
+                }
+
+                Transform doorLeafPivot = FindInHierarchy(door.transform, "Door Leaf Pivot")?.transform;
+                if (simpleInteractable == null || doorLeafPivot == null)
+                {
+                    throw new InvalidOperationException(
+                        "The Emergency Door must contain an interactable and a Door Leaf Pivot.");
+                }
+
+                EmergencyDoorController doorController =
+                    EnsureComponent<EmergencyDoorController>(door);
                 SerializedObject serializedDoor = new SerializedObject(doorController);
                 Undo.RecordObject(doorController, "Wire emergency door");
                 SetObjectReference(serializedDoor, "emergencyStateManager", stateManager);
+                SetObjectReference(serializedDoor, "doorInteractable", simpleInteractable);
+                SetObjectReference(serializedDoor, "doorLeafPivot", doorLeafPivot);
+                if (handle != null && handle.GetComponent<Renderer>() != null)
+                {
+                    SetObjectReference(
+                        serializedDoor,
+                        "accessIndicator",
+                        handle.GetComponent<Renderer>());
+                }
+
                 serializedDoor.ApplyModifiedProperties();
-                SetObjectReference(
-                    doorInteractable,
-                    "m_InteractionManager",
-                    interactionManager);
+                SetObjectReference(simpleInteractable, "m_InteractionManager", interactionManager);
                 PrefabUtility.RecordPrefabInstancePropertyModifications(doorController);
 
-                GameObject evacuationObject = CreateSceneChild(
-                    scene,
-                    phase6Root.transform,
-                    "Evacuation Manager");
+                GameObject evacuationObject =
+                    FindInHierarchy(phase6Root.transform, "Evacuation Manager");
+                if (evacuationObject == null)
+                {
+                    evacuationObject = CreateSceneChild(
+                        scene,
+                        phase6Root.transform,
+                        "Evacuation Manager");
+                }
+
                 EvacuationManager evacuationManager =
-                    Undo.AddComponent<EvacuationManager>(evacuationObject);
-                GameObject passage = CreateWaypoint(
-                    scene,
+                    EnsureComponent<EvacuationManager>(evacuationObject);
+                GameObject passage = FindInHierarchy(phase6Root.transform, "Passage");
+                if (passage == null)
+                {
+                    passage = CreateWaypoint(
+                        scene,
+                        phase6Root.transform,
+                        "Passage",
+                        "PASSAGE\nTRAINING MARKER",
+                        playerEnvironment.RoutePoint(0.48f),
+                        0);
+                }
+
+                GameObject stairs = FindInHierarchy(phase6Root.transform, "Stairs");
+                if (stairs == null)
+                {
+                    stairs = CreateWaypoint(
+                        scene,
+                        phase6Root.transform,
+                        "Stairs",
+                        "STAIRS\nTRAINING MARKER",
+                        playerEnvironment.RoutePoint(0.72f),
+                        1);
+                }
+
+                GameObject assembly = FindInHierarchy(
                     phase6Root.transform,
-                    "Passage",
-                    "PASSAGE\nTRAINING MARKER",
-                    playerEnvironment.RoutePoint(0.48f),
-                    0);
-                GameObject stairs = CreateWaypoint(
-                    scene,
-                    phase6Root.transform,
-                    "Stairs",
-                    "STAIRS\nTRAINING MARKER",
-                    playerEnvironment.RoutePoint(0.72f),
-                    1);
-                GameObject assembly = CreateAssemblyPoint(
-                    scene,
-                    phase6Root.transform,
-                    "Basement Assembly Area Marker",
-                    "ASSEMBLY POINT\nTRAINING MARKER",
-                    playerEnvironment.RoutePoint(0.94f));
+                    "Basement Assembly Area Marker");
+                if (assembly == null)
+                {
+                    assembly = CreateAssemblyPoint(
+                        scene,
+                        phase6Root.transform,
+                        "Basement Assembly Area Marker",
+                        "ASSEMBLY POINT\nTRAINING MARKER",
+                        playerEnvironment.RoutePoint(0.94f));
+                }
+
+                EnsureWaypointComponents(passage);
+                EnsureWaypointComponents(stairs);
+                EnsureAssemblyPointComponents(assembly);
                 CreateEmergencyControls(
                     scene,
                     phase6Root.transform,
@@ -278,6 +317,7 @@ namespace RESQ.EditorTools
                     SetObjectReference(serializedWaypoint, "evacuationManager", evacuationManager);
                     SetObjectReference(serializedWaypoint, "expectedPlayerCollider", playerCollider);
                     serializedWaypoint.ApplyModifiedProperties();
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(waypointComponents[index]);
                 }
 
                 AssemblyPointTrigger assemblyTrigger =
@@ -288,6 +328,7 @@ namespace RESQ.EditorTools
                 SetObjectReference(serializedAssembly, "evacuationManager", evacuationManager);
                 SetObjectReference(serializedAssembly, "expectedPlayerCollider", playerCollider);
                 serializedAssembly.ApplyModifiedProperties();
+                PrefabUtility.RecordPrefabInstancePropertyModifications(assemblyTrigger);
 
                 SerializedObject serializedManager = new SerializedObject(evacuationManager);
                 Undo.RecordObject(evacuationManager, "Wire evacuation manager");
@@ -299,6 +340,7 @@ namespace RESQ.EditorTools
                     new UnityEngine.Object[] { passage.transform, stairs.transform });
                 SetObjectReference(serializedManager, "assemblyPoint", assembly.transform);
                 serializedManager.ApplyModifiedProperties();
+                PrefabUtility.RecordPrefabInstancePropertyModifications(evacuationManager);
 
                 SaveScene(
                     scene,
@@ -827,6 +869,29 @@ namespace RESQ.EditorTools
             return waypoint;
         }
 
+        private static void EnsureWaypointComponents(GameObject waypoint)
+        {
+            Collider trigger = waypoint.GetComponent<Collider>();
+            if (trigger == null)
+            {
+                trigger = Undo.AddComponent<SphereCollider>(waypoint);
+            }
+
+            Undo.RecordObject(trigger, "Configure evacuation waypoint trigger");
+            trigger.isTrigger = true;
+            SphereCollider sphereTrigger = trigger as SphereCollider;
+            if (sphereTrigger != null)
+            {
+                sphereTrigger.radius = 0.4f;
+            }
+
+            Rigidbody body = EnsureComponent<Rigidbody>(waypoint);
+            Undo.RecordObject(body, "Configure evacuation waypoint body");
+            body.isKinematic = true;
+            body.useGravity = false;
+            EnsureComponent<EvacuationWaypoint>(waypoint);
+        }
+
         private static GameObject CreateAssemblyPoint(
             Scene scene,
             Transform parent,
@@ -849,6 +914,29 @@ namespace RESQ.EditorTools
             return assembly;
         }
 
+        private static void EnsureAssemblyPointComponents(GameObject assembly)
+        {
+            Collider trigger = assembly.GetComponent<Collider>();
+            if (trigger == null)
+            {
+                trigger = Undo.AddComponent<SphereCollider>(assembly);
+            }
+
+            Undo.RecordObject(trigger, "Configure assembly point trigger");
+            trigger.isTrigger = true;
+            SphereCollider sphereTrigger = trigger as SphereCollider;
+            if (sphereTrigger != null)
+            {
+                sphereTrigger.radius = 0.72f;
+            }
+
+            Rigidbody body = EnsureComponent<Rigidbody>(assembly);
+            Undo.RecordObject(body, "Configure assembly point body");
+            body.isKinematic = true;
+            body.useGravity = false;
+            EnsureComponent<AssemblyPointTrigger>(assembly);
+        }
+
         private static void CreateEmergencyControls(
             Scene scene,
             Transform parent,
@@ -856,14 +944,18 @@ namespace RESQ.EditorTools
             XRInteractionManager interactionManager,
             PlayerEnvironment playerEnvironment)
         {
-            GameObject controls = CreateSceneChild(scene, parent, "Emergency Controls");
-            Vector3 right = Vector3.Cross(Vector3.up, playerEnvironment.routeDirection).normalized;
-            Vector3 panelPosition = playerEnvironment.RoutePoint(0.08f) + right * 0.72f;
-            panelPosition.y = playerEnvironment.floorY;
-            controls.transform.position = panelPosition;
-            controls.transform.rotation = Quaternion.LookRotation(
-                playerEnvironment.camera.transform.position - panelPosition,
-                Vector3.up);
+            GameObject controls = FindInHierarchy(parent, "Emergency Controls");
+            if (controls == null)
+            {
+                controls = CreateSceneChild(scene, parent, "Emergency Controls");
+                Vector3 right = Vector3.Cross(Vector3.up, playerEnvironment.routeDirection).normalized;
+                Vector3 panelPosition = playerEnvironment.RoutePoint(0.08f) + right * 0.72f;
+                panelPosition.y = playerEnvironment.floorY;
+                controls.transform.position = panelPosition;
+                controls.transform.rotation = Quaternion.LookRotation(
+                    playerEnvironment.camera.transform.position - panelPosition,
+                    Vector3.up);
+            }
 
             CreateControlButton(
                 scene,
@@ -908,49 +1000,68 @@ namespace RESQ.EditorTools
             EmergencyStateManager stateManager,
             XRInteractionManager interactionManager)
         {
-            Material material = GetOrCreateMaterial(
-                MaterialFolder + "/RESQ_Control_" + action + ".mat",
-                color,
-                true);
-            GameObject button = CreatePrimitive(
-                scene,
-                PrimitiveType.Cube,
-                name,
-                parent,
-                localPosition,
-                Vector3.zero,
-                new Vector3(0.42f, 0.24f, 0.12f),
-                material,
-                true);
-            XRSimpleInteractable interactable = Undo.AddComponent<XRSimpleInteractable>(button);
+            GameObject button = FindInHierarchy(parent.root, name);
+            bool created = button == null;
+            if (created)
+            {
+                Material material = GetOrCreateMaterial(
+                    MaterialFolder + "/RESQ_Control_" + action + ".mat",
+                    color,
+                    true);
+                button = CreatePrimitive(
+                    scene,
+                    PrimitiveType.Cube,
+                    name,
+                    parent,
+                    localPosition,
+                    Vector3.zero,
+                    new Vector3(0.42f, 0.24f, 0.12f),
+                    material,
+                    true);
+            }
+
+            Collider buttonCollider = button.GetComponent<Collider>();
+            if (buttonCollider == null)
+            {
+                buttonCollider = Undo.AddComponent<BoxCollider>(button);
+            }
+
+            XRSimpleInteractable interactable = EnsureComponent<XRSimpleInteractable>(button);
             SerializedObject serializedInteractable = new SerializedObject(interactable);
+            Undo.RecordObject(interactable, "Wire emergency button interactable");
             SetObjectReference(serializedInteractable, "m_InteractionManager", interactionManager);
             SetObjectArray(
                 serializedInteractable,
                 "m_Colliders",
-                new UnityEngine.Object[] { button.GetComponent<BoxCollider>() });
+                new UnityEngine.Object[] { buttonCollider });
             serializedInteractable.ApplyModifiedProperties();
+            PrefabUtility.RecordPrefabInstancePropertyModifications(interactable);
 
-            EmergencyStateControl control = Undo.AddComponent<EmergencyStateControl>(button);
+            EmergencyStateControl control = EnsureComponent<EmergencyStateControl>(button);
             SerializedObject serializedControl = new SerializedObject(control);
+            Undo.RecordObject(control, "Wire emergency control");
             SetObjectReference(serializedControl, "emergencyStateManager", stateManager);
             SetObjectReference(serializedControl, "interactable", interactable);
             serializedControl.FindProperty("action").enumValueIndex = (int)action;
             serializedControl.ApplyModifiedProperties();
+            PrefabUtility.RecordPrefabInstancePropertyModifications(control);
 
-            GameObject labelObject = new GameObject("Button Label");
-            SceneManager.MoveGameObjectToScene(labelObject, scene);
-            Undo.RegisterCreatedObjectUndo(labelObject, "Create emergency button label");
-            Undo.SetTransformParent(labelObject.transform, button.transform, "Parent emergency button label");
-            labelObject.transform.localPosition = new Vector3(0f, 0f, -0.56f);
-            labelObject.transform.localRotation = Quaternion.identity;
-            TextMesh text = Undo.AddComponent<TextMesh>(labelObject);
-            text.text = label;
-            text.anchor = TextAnchor.MiddleCenter;
-            text.alignment = TextAlignment.Center;
-            text.fontSize = 48;
-            text.characterSize = 0.01f;
-            text.color = Color.white;
+            if (created)
+            {
+                GameObject labelObject = new GameObject("Button Label");
+                SceneManager.MoveGameObjectToScene(labelObject, scene);
+                Undo.RegisterCreatedObjectUndo(labelObject, "Create emergency button label");
+                Undo.SetTransformParent(labelObject.transform, button.transform, "Parent emergency button label");
+                labelObject.transform.localPosition = new Vector3(0f, 0f, -0.56f);
+                labelObject.transform.localRotation = Quaternion.identity;
+                TextMesh text = Undo.AddComponent<TextMesh>(labelObject);
+                text.text = label;
+                text.anchor = TextAnchor.MiddleCenter;
+                text.alignment = TextAlignment.Center;
+                text.fontSize = 48;
+                text.characterSize = 0.01f;
+                text.color = Color.white;
+            }
         }
 
         private static void CreateWaypointVisual(
@@ -1063,6 +1174,12 @@ namespace RESQ.EditorTools
             Undo.RegisterCreatedObjectUndo(child, $"Create {name}");
             Undo.SetTransformParent(child.transform, parent, $"Parent {name}");
             return child;
+        }
+
+        private static T EnsureComponent<T>(GameObject gameObject) where T : Component
+        {
+            T component = gameObject.GetComponent<T>();
+            return component != null ? component : Undo.AddComponent<T>(gameObject);
         }
 
         private static GameObject SavePrefabAsset(GameObject root, string path)

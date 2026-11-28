@@ -9,9 +9,12 @@ using UnityEngine.SceneManagement;
 
 namespace RESQ.EditorTools
 {
+    [InitializeOnLoad]
     internal static class RESQPhase5SceneSetup
     {
         private const string TestScenePath = "Assets/Scenes/RESQ_Phase5_Test.unity";
+        private const string TestPassCountKey = "RESQ.Phase5And6TestPassCount";
+        private const string TestFailCountKey = "RESQ.Phase5And6TestFailCount";
         private const string PrefabFolder = "Assets/_RESQ/Prefabs";
         private const string MaterialsFolder = "Assets/_RESQ/Materials";
         private const string SmallFireSourcePath =
@@ -32,6 +35,12 @@ namespace RESQ.EditorTools
                 "Smoke Dark",
                 "Smoke Column"
             };
+
+        static RESQPhase5SceneSetup()
+        {
+            EditorApplication.playModeStateChanged -= OnPhase5PlayModeStateChanged;
+            EditorApplication.playModeStateChanged += OnPhase5PlayModeStateChanged;
+        }
 
         [MenuItem("RESQ/Phase 5/Inspect Test Scene and VFX _F6")]
         internal static void InspectTestSceneAndVfx()
@@ -286,10 +295,14 @@ namespace RESQ.EditorTools
             testPhaseFrame = 0;
             testPhasePassCount = 0;
             testPhaseFailCount = 0;
+            SessionState.SetInt(TestPassCountKey, 0);
+            SessionState.SetInt(TestFailCountKey, 0);
             testManager = null;
             testFireController = null;
             testSmokeController = null;
             testAlarmController = null;
+            testEvacuationManager = null;
+            testAssemblyPoint = null;
 
             EditorApplication.playModeStateChanged -= OnPhase5PlayModeStateChanged;
             EditorApplication.playModeStateChanged += OnPhase5PlayModeStateChanged;
@@ -303,11 +316,16 @@ namespace RESQ.EditorTools
         private static FireController testFireController;
         private static SmokeController testSmokeController;
         private static FireAlarmController testAlarmController;
+        private static EvacuationManager testEvacuationManager;
+        private static AssemblyPointTrigger testAssemblyPoint;
 
         private static void OnPhase5PlayModeStateChanged(PlayModeStateChange state)
         {
             if (state == PlayModeStateChange.EnteredPlayMode)
             {
+                testPhaseFrame = 0;
+                testPhasePassCount = SessionState.GetInt(TestPassCountKey, 0);
+                testPhaseFailCount = SessionState.GetInt(TestFailCountKey, 0);
                 EditorApplication.update -= OnPhase5TestUpdate;
                 EditorApplication.update += OnPhase5TestUpdate;
             }
@@ -318,8 +336,12 @@ namespace RESQ.EditorTools
             else if (state == PlayModeStateChange.EnteredEditMode)
             {
                 EditorApplication.playModeStateChanged -= OnPhase5PlayModeStateChanged;
+                testPhasePassCount = SessionState.GetInt(TestPassCountKey, testPhasePassCount);
+                testPhaseFailCount = SessionState.GetInt(TestFailCountKey, testPhaseFailCount);
+                SessionState.EraseInt(TestPassCountKey);
+                SessionState.EraseInt(TestFailCountKey);
                 Debug.Log(
-                    $"Phase 5 Play Mode test finished: {testPhasePassCount} passed, {testPhaseFailCount} failed.");
+                    $"Phase 5 & 6 Play Mode integration tests finished: {testPhasePassCount} passed, {testPhaseFailCount} failed.");
             }
         }
 
@@ -333,13 +355,26 @@ namespace RESQ.EditorTools
                 testFireController = UnityEngine.Object.FindAnyObjectByType<FireController>();
                 testSmokeController = UnityEngine.Object.FindAnyObjectByType<SmokeController>();
                 testAlarmController = UnityEngine.Object.FindAnyObjectByType<FireAlarmController>();
+                testEvacuationManager = UnityEngine.Object.FindAnyObjectByType<EvacuationManager>();
+                testAssemblyPoint = UnityEngine.Object.FindAnyObjectByType<AssemblyPointTrigger>();
 
                 CheckPhase5(
                     testManager != null &&
                     testFireController != null &&
                     testSmokeController != null &&
-                    testAlarmController != null,
-                    "All four Phase 5 controllers are present in Play Mode.");
+                    testAlarmController != null &&
+                    testEvacuationManager != null &&
+                    testAssemblyPoint != null,
+                    "Phase 5 controllers and Phase 6 evacuation components are present in Play Mode.");
+                if (testManager == null ||
+                    testFireController == null ||
+                    testSmokeController == null ||
+                    testAlarmController == null ||
+                    testEvacuationManager == null ||
+                    testAssemblyPoint == null)
+                {
+                    FailAndExit("Required Phase 5/6 integration components are missing.");
+                }
             }
             else if (testPhaseFrame == 5)
             {
@@ -349,7 +384,6 @@ namespace RESQ.EditorTools
                     return;
                 }
 
-                testManager.ResetEmergency();
                 CheckPhase5(testManager.CurrentState == EmergencyState.Inactive, "Emergency starts Inactive.");
                 CheckPhase5(!testFireController.FireIsActive, "Fire starts inactive.");
                 CheckPhase5(!testSmokeController.SmokeIsActive, "Smoke starts inactive.");
@@ -369,24 +403,68 @@ namespace RESQ.EditorTools
                 CheckPhase5(
                     testManager.CurrentState == EmergencyState.EvacuationActive,
                     "Begin Evacuation enters EvacuationActive.");
+                if (!TryGetEvacuationTestReferences(
+                        out EvacuationWaypoint passage,
+                        out EvacuationWaypoint stairs,
+                        out Collider playerCollider))
+                {
+                    FailAndExit("Evacuation waypoints or expected player collider are not configured.");
+                    return;
+                }
+
+                stairs.SendMessage("OnTriggerEnter", playerCollider, SendMessageOptions.RequireReceiver);
+                CheckPhase5(
+                    testEvacuationManager.ReachedWaypointCount == 0,
+                    "Stairs cannot be reached before Passage.");
+                passage.SendMessage("OnTriggerEnter", playerCollider, SendMessageOptions.RequireReceiver);
+                CheckPhase5(
+                    testEvacuationManager.ReachedWaypointCount == 1,
+                    "Passage advances the first route step.");
+                passage.SendMessage("OnTriggerEnter", playerCollider, SendMessageOptions.RequireReceiver);
+                CheckPhase5(
+                    testEvacuationManager.ReachedWaypointCount == 1,
+                    "A repeated Passage trigger does not skip the next step.");
+                stairs.SendMessage("OnTriggerEnter", playerCollider, SendMessageOptions.RequireReceiver);
+                CheckPhase5(
+                    testEvacuationManager.ReachedWaypointCount == 2,
+                    "Stairs advances the second route step.");
             }
             else if (testPhaseFrame == 20)
             {
-                testManager.CompleteEvacuation();
+                Collider playerCollider =
+                    ReadObjectReference(testEvacuationManager, "expectedPlayerCollider") as Collider;
+                if (playerCollider == null)
+                {
+                    FailAndExit("EvacuationManager expected player collider is missing.");
+                    return;
+                }
+
+                testAssemblyPoint.SendMessage(
+                    "OnTriggerEnter",
+                    playerCollider,
+                    SendMessageOptions.RequireReceiver);
                 CheckPhase5(
                     testManager.CurrentState == EmergencyState.Completed,
-                    "Complete Evacuation enters Completed.");
+                    "Assembly point completes evacuation after all route waypoints.");
+                CheckPhase5(
+                    testEvacuationManager.IsComplete,
+                    "Assembly point marks the evacuation route complete.");
             }
             else if (testPhaseFrame == 25)
             {
+                CheckPhase5(
+                    testFireController.Targets.Count > 0,
+                    "FireController has at least one suppression target.");
                 foreach (FireSuppressionTarget target in testFireController.Targets)
                 {
                     target.ApplySuppression(target.MaxSuppression);
                 }
 
                 CheckPhase5(
-                    testFireController.GetOverallSuppressionProgress() >= 1f,
-                    "Applying suppression reaches 100 percent.");
+                    testFireController.Targets.Count > 0 &&
+                    testFireController.GetOverallSuppressionProgress() >= 1f &&
+                    testFireController.ActiveTargetCount == 0,
+                    "Suppressing configured fires reaches 100 percent and disables every target.");
             }
             else if (testPhaseFrame == 30)
             {
@@ -395,6 +473,10 @@ namespace RESQ.EditorTools
                 CheckPhase5(!testAlarmController.AlarmIsActive, "Reset stops alarm.");
                 CheckPhase5(!testFireController.FireIsActive, "Reset stops fire.");
                 CheckPhase5(!testSmokeController.SmokeIsActive, "Reset stops and clears smoke.");
+                CheckPhase5(
+                    testFireController.Targets.Count > 0 &&
+                    testFireController.ActiveTargetCount == testFireController.Targets.Count,
+                    "Reset restores every suppression target.");
             }
             else if (testPhaseFrame == 35)
             {
@@ -417,20 +499,74 @@ namespace RESQ.EditorTools
             if (passed)
             {
                 testPhasePassCount++;
-                Debug.Log($"Phase 5 Play Mode PASS: {message}");
+                SessionState.SetInt(TestPassCountKey, testPhasePassCount);
+                Debug.Log($"Phase 5 & 6 Play Mode PASS: {message}");
             }
             else
             {
                 testPhaseFailCount++;
-                Debug.LogError($"Phase 5 Play Mode FAIL: {message}");
+                SessionState.SetInt(TestFailCountKey, testPhaseFailCount);
+                Debug.LogError($"Phase 5 & 6 Play Mode FAIL: {message}");
             }
         }
 
         private static void FailAndExit(string message)
         {
             testPhaseFailCount++;
-            Debug.LogError($"Phase 5 Play Mode FAIL: {message}");
+            SessionState.SetInt(TestFailCountKey, testPhaseFailCount);
+            Debug.LogError($"Phase 5 & 6 Play Mode FAIL: {message}");
             EditorApplication.ExitPlaymode();
+        }
+
+        private static bool TryGetEvacuationTestReferences(
+            out EvacuationWaypoint passage,
+            out EvacuationWaypoint stairs,
+            out Collider playerCollider)
+        {
+            passage = null;
+            stairs = null;
+            playerCollider = null;
+            if (testEvacuationManager == null)
+            {
+                return false;
+            }
+
+            SerializedObject serializedManager = new SerializedObject(testEvacuationManager);
+            SerializedProperty waypoints = serializedManager.FindProperty("orderedWaypoints");
+            playerCollider =
+                ReadObjectReference(testEvacuationManager, "expectedPlayerCollider") as Collider;
+            if (waypoints == null || waypoints.arraySize != 2 || playerCollider == null)
+            {
+                return false;
+            }
+
+            Transform passageTransform =
+                waypoints.GetArrayElementAtIndex(0).objectReferenceValue as Transform;
+            Transform stairsTransform =
+                waypoints.GetArrayElementAtIndex(1).objectReferenceValue as Transform;
+            passage = passageTransform != null
+                ? passageTransform.GetComponent<EvacuationWaypoint>()
+                : null;
+            stairs = stairsTransform != null
+                ? stairsTransform.GetComponent<EvacuationWaypoint>()
+                : null;
+
+            return passage != null &&
+                   stairs != null &&
+                   passage.WaypointIndex == 0 &&
+                   stairs.WaypointIndex == 1;
+        }
+
+        private static UnityEngine.Object ReadObjectReference(Component component, string propertyName)
+        {
+            if (component == null)
+            {
+                return null;
+            }
+
+            SerializedProperty property =
+                new SerializedObject(component).FindProperty(propertyName);
+            return property != null ? property.objectReferenceValue : null;
         }
 
         private static bool TryGetTestScene(out Scene scene)
